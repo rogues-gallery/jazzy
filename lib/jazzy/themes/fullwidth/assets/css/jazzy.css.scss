@@ -1,3 +1,7 @@
+/*! Jazzy - https://github.com/realm/jazzy
+ *  Copyright Realm Inc.
+ *  SPDX-License-Identifier: MIT
+ */
 // ===========================================================================
 //
 //  Variables
@@ -185,6 +189,11 @@ th, td {
   border: 1px solid $table_border_color;
 }
 
+hr {
+  height: 1px;
+  border: none;
+  background-color: $table_border_color;
+}
 
 // ----- Code
 
@@ -201,13 +210,15 @@ code {
   font-family: $code_font;
 }
 
-p, li {
-  > code {
-    background: $code_bg_color;
-    padding: .2em;
-    &:before, &:after {
-      letter-spacing: -.2em;
-      content: "\00a0";
+.item-container, .top-matter {
+  p, li {
+    > code {
+      background: $code_bg_color;
+      padding: .2em;
+      &:before, &:after {
+        letter-spacing: -.2em;
+        content: "\00a0";
+      }
     }
   }
 }
@@ -261,8 +272,8 @@ pre code {
 }
 
 .header-icon {
-  padding-right: 6px;
-  vertical-align: -4px;
+  padding-right: 2px;
+  vertical-align: -3px;
   height: 16px;
 }
 
@@ -367,6 +378,10 @@ pre code {
 .section-name {
   color: #666;
   display: block;
+
+  p {
+    margin-bottom: inherit;
+  }
 }
 
 .declaration .highlight {
@@ -394,6 +409,28 @@ pre code {
   }
 }
 
+.section-name-container {
+  position: relative;
+
+  .section-name-link {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    margin-bottom: 0;
+  }
+
+  .section-name {
+    position: relative;
+    pointer-events: none;
+    z-index: 1;
+    a {
+      pointer-events: auto;
+    }
+  }
+}
+
 .item-container {
   padding: 0;
 }
@@ -411,16 +448,18 @@ pre code {
   }
 
   .token, .direct-link {
+    display: inline-block;
+    text-indent: -20px;
     padding-left: 3px;
-    margin-left: 0px;
+    margin-left: 20px;
     font-size: 1rem;
   }
+}
 
-  .declaration-note {
-    font-size: .85em;
-    color: #808080;
-    font-style: italic;
-  }
+.declaration-note {
+  font-size: .85em;
+  color: #808080;
+  font-style: italic;
 }
 
 .pointer-container {

@@ -1,10 +1,11 @@
+# frozen_string_literal: true
+
 module Jazzy
   # Collect + report metadata about a processed module
   class Stats
     include Config::Mixin
 
-    attr_reader :documented, :acl_skipped
-    attr_reader :undocumented_decls
+    attr_reader :documented, :acl_skipped, :spi_skipped, :undocumented_decls
 
     def add_documented
       @documented += 1
@@ -14,8 +15,16 @@ module Jazzy
       @acl_skipped += 1
     end
 
+    def add_spi_skipped
+      @spi_skipped += 1
+    end
+
     def add_undocumented(decl)
       @undocumented_decls << decl
+    end
+
+    def remove_undocumented(decl)
+      @undocumented_decls.delete(decl)
     end
 
     def acl_included
@@ -27,12 +36,12 @@ module Jazzy
     end
 
     def initialize
-      @documented = @acl_skipped = 0
+      @documented = @acl_skipped = @spi_skipped = 0
       @undocumented_decls = []
     end
 
     def report
-      puts "#{doc_coverage}\% documentation coverage " \
+      puts "#{doc_coverage}% documentation coverage " \
         "with #{undocumented} undocumented " \
         "#{symbol_or_symbols(undocumented)}"
 
@@ -49,10 +58,16 @@ module Jazzy
           "#{symbol_or_symbols(acl_skipped)} " \
           '(use `--min-acl` to specify a different minimum ACL)'
       end
+
+      if spi_skipped > 0
+        puts "skipped #{spi_skipped} SPI #{symbol_or_symbols(spi_skipped)} " \
+          '(use `--include-spi-declarations` to include these)'
+      end
     end
 
     def doc_coverage
       return 0 if acl_included == 0
+
       (100 * documented) / acl_included
     end
 

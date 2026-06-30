@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'tmpdir'
 require 'json'
 
@@ -18,13 +20,12 @@ module Jazzy
       Pod::Config.instance.with_changes(installation_root: installation_root,
                                         verbose: false) do
         sandbox = Pod::Sandbox.new(Pod::Config.instance.sandbox_root)
-        swift_version = compiler_swift_version(config.swift_version)
-        installer = Pod::Installer.new(sandbox, podfile(swift_version))
+        installer = Pod::Installer.new(sandbox, podfile(config))
         installer.install!
         stdout = Dir.chdir(sandbox.root) do
           targets = installer.pod_targets
-                             .select { |pt| pt.pod_name == podspec.root.name }
-                             .map(&:label)
+            .select { |pt| pt.pod_name == podspec.root.name }
+            .map(&:label)
 
           targets.map do |t|
             args = %W[doc --module-name #{podspec.module_name} -- -target #{t}]
@@ -43,33 +44,37 @@ module Jazzy
       end
     end
 
-    # rubocop:disable Metrics/CyclomaticComplexity
-    # rubocop:disable Metrics/PerceivedComplexity
+    # rubocop:disable Metrics/MethodLength
     def self.apply_config_defaults(podspec, config)
       return unless podspec
 
       unless config.author_name_configured
         config.author_name = author_name(podspec)
+        config.author_name_configured = true
       end
-      unless config.module_name_configured
+      unless config.module_name_known?
         config.module_name = podspec.module_name
+        config.module_name_configured = true
       end
       unless config.author_url_configured
         config.author_url = podspec.homepage || github_file_prefix(podspec)
+        config.author_url_configured = true
       end
       unless config.version_configured
         config.version = podspec.version.to_s
+        config.version_configured = true
       end
-      unless config.github_file_prefix_configured
-        config.github_file_prefix = github_file_prefix(podspec)
+      unless config.source_host_files_url_configured
+        config.source_host_files_url = github_file_prefix(podspec)
+        config.source_host_files_url_configured = true
       end
       unless config.swift_version_configured
         trunk_swift_build = podspec.attributes_hash['pushed_with_swift_version']
         config.swift_version = trunk_swift_build if trunk_swift_build
+        config.swift_version_configured = true
       end
     end
-    # rubocop:enable Metrics/CyclomaticComplexity
-    # rubocop:enable Metrics/PerceivedComplexity
+    # rubocop:enable Metrics/MethodLength
 
     private
 
@@ -87,21 +92,23 @@ module Jazzy
 
     def self.github_file_prefix(podspec)
       return unless podspec.source[:url] =~ %r{github.com[:/]+(.+)/(.+)}
+
       org, repo = Regexp.last_match
-      return unless org && repo
-      repo.sub!(/\.git$/, '')
       return unless rev = podspec.source[:tag] || podspec.source[:commit]
-      "https://github.com/#{org}/#{repo}/blob/#{rev}"
+
+      "https://github.com/#{org}/#{repo.sub(/\.git$/, '')}/blob/#{rev}"
     end
 
     private_class_method :github_file_prefix
 
     # Latest valid value for SWIFT_VERSION.
-    LATEST_SWIFT_VERSION = '5'.freeze
+    LATEST_SWIFT_VERSION = '6'
+    private_constant :LATEST_SWIFT_VERSION
 
     # All valid values for SWIFT_VERSION that are longer
     # than a major version number.  Ordered ascending.
     LONG_SWIFT_VERSIONS = ['4.2'].freeze
+    private_constant :LONG_SWIFT_VERSIONS
 
     # Go from a full Swift version like 4.2.1 to
     # something valid for SWIFT_VERSION.
@@ -135,10 +142,15 @@ module Jazzy
     end
 
     # rubocop:disable Metrics/MethodLength
-    def podfile(swift_version)
+    def podfile(config)
+      swift_version = compiler_swift_version(config.swift_version)
       podspec = @podspec
       path = pod_path
       @podfile ||= Pod::Podfile.new do
+        config.pod_sources.each do |src|
+          source src
+        end
+
         install! 'cocoapods',
                  integrate_targets: false,
                  deterministic_uuids: false
@@ -150,9 +162,8 @@ module Jazzy
             # Travis builds take too long when building docs for all available
             # platforms for the Moya integration spec, so we just document OSX.
             # TODO: remove once jazzy is fast enough.
-            if ENV['JAZZY_INTEGRATION_SPECS']
-              next if p.name != :osx
-            end
+            next if ENV['JAZZY_INTEGRATION_SPECS'] && p.name != :osx
+
             target("Jazzy-#{ss.name.gsub('/', '__')}-#{p.name}") do
               use_frameworks!
               platform p.name, p.deployment_target
@@ -165,4 +176,5 @@ module Jazzy
     end
     # rubocop:enable Metrics/MethodLength
   end
+  # rubocop:enable Metrics/ClassLength
 end

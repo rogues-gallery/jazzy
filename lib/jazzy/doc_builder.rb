@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'fileutils'
 require 'mustache'
 require 'pathname'
@@ -14,6 +16,7 @@ require 'jazzy/source_declaration'
 require 'jazzy/source_document'
 require 'jazzy/source_module'
 require 'jazzy/sourcekitten'
+require 'jazzy/symbol_graph'
 
 module Jazzy
   # This module handles HTML generation, file writing, asset copying,
@@ -29,60 +32,67 @@ module Jazzy
     # @return [Array] doc structure comprised of
     #                     section names & child names & URLs
     def self.doc_structure_for_docs(docs)
-      docs.map do |doc|
-        children = doc.children
-                      .sort_by { |c| [c.nav_order, c.name, c.usr || ''] }
-                      .flat_map do |child|
-          # FIXME: include arbitrarily nested extensible types
-          [{ name: child.name, url: child.url }] +
-            Array(child.children.select do |sub_child|
-              sub_child.type.swift_extensible? || sub_child.type.extension?
-            end).map do |sub_child|
-              { name: "– #{sub_child.name}", url: sub_child.url }
-            end
+      docs
+        .map do |doc|
+          children = children_for_doc(doc)
+          {
+            section: doc.name,
+            url: doc.url,
+            children: children,
+          }
         end
-        {
-          section: doc.name,
-          url: doc.url,
-          children: children,
-        }
+        .select do |structure|
+          if Config.instance.hide_unlisted_documentation
+            unlisted_prefix = Config.instance.custom_categories_unlisted_prefix
+            structure[:section] != "#{unlisted_prefix}Guides"
+          else
+            true
+          end
+        end
+    end
+
+    def self.children_for_doc(doc)
+      doc.children
+        .sort_by { |c| [c.nav_order, c.name, c.usr || ''] }
+        .flat_map do |child|
+        # FIXME: include arbitrarily nested extensible types
+        [{ name: child.name, url: child.url }] +
+          Array(child.children.select do |sub_child|
+            sub_child.type.swift_extensible? || sub_child.type.extension?
+          end).map do |sub_child|
+            { name: "– #{sub_child.name}", url: sub_child.url }
+          end
       end
     end
 
     # Build documentation from the given options
     # @param [Config] options
-    # @return [SourceModule] the documented source module
     def self.build(options)
-      if options.sourcekitten_sourcefile
-        stdout = options.sourcekitten_sourcefile.read
-      else
-        if options.podspec_configured
+      module_jsons = options.module_configs.map do |module_config|
+        if module_config.podspec_configured
+          # Config#validate guarantees not multi-module here
           pod_documenter = PodspecDocumenter.new(options.podspec)
-          stdout = pod_documenter.sourcekitten_output(options)
+          pod_documenter.sourcekitten_output(options)
+        elsif !module_config.sourcekitten_sourcefile.empty?
+          "[#{module_config.sourcekitten_sourcefile.map(&:read).join(',')}]"
+        elsif module_config.swift_build_tool == :symbolgraph
+          SymbolGraph.build(module_config)
         else
-          stdout = Dir.chdir(options.source_directory) do
-            arguments = SourceKitten.arguments_from_options(options)
+          Dir.chdir(module_config.source_directory) do
+            arguments = SourceKitten.arguments_from_options(module_config)
             SourceKitten.run_sourcekitten(arguments)
           end
         end
-        unless $?.success?
-          warn 'Please pass in xcodebuild arguments using -x'
-          warn 'If build arguments are correct, please file an issue on ' \
-            'https://github.com/realm/jazzy/issues'
-          exit $?.exitstatus || 1
-        end
       end
 
-      build_docs_for_sourcekitten_output(stdout, options)
+      build_docs_for_sourcekitten_output(module_jsons, options)
     end
 
     # Build & write HTML docs to disk from structured docs array
     # @param [String] output_dir Root directory to write docs
-    # @param [Array] docs Array of structured docs
-    # @param [Config] options Build options
-    # @param [Array] doc_structure @see #doc_structure_for_docs
-    def self.build_docs(output_dir, docs, source_module)
-      each_doc(output_dir, docs) do |doc, path|
+    # @param [SourceModule] source_module All info to generate docs
+    def self.build_docs(output_dir, source_module)
+      each_doc(output_dir, source_module.docs) do |doc, path|
         prepare_output_dir(path.parent, false)
         depth = path.relative_path_from(output_dir).each_filename.count - 1
         path_to_root = '../' * depth
@@ -95,10 +105,10 @@ module Jazzy
     def self.each_doc(output_dir, docs, &block)
       docs.each do |doc|
         next unless doc.render_as_page?
-        # Assuming URL is relative to documentation root:
-        path = output_dir + (doc.url || "#{doc.name}.html")
+
+        # Filepath is relative to documentation root:
+        path = output_dir + doc.filepath
         block.call(doc, path)
-        next if doc.name == 'index'
         each_doc(
           output_dir,
           doc.children,
@@ -114,19 +124,23 @@ module Jazzy
 
       docs << SourceDocument.make_index(options.readme_path)
 
-      source_module = SourceModule.new(options, docs, structure, coverage)
-
       output_dir = options.output
-      build_docs(output_dir, source_module.docs, source_module)
+
+      docset_builder = DocsetBuilder.new(output_dir)
+
+      source_module = SourceModule.new(docs, structure, coverage, docset_builder)
+
+      build_docs(output_dir, source_module)
 
       unless options.disable_search
         warn 'building search index'
         SearchBuilder.build(source_module, output_dir)
       end
 
-      copy_assets(output_dir)
+      copy_extensions(source_module, output_dir)
+      copy_theme_assets(output_dir)
 
-      DocsetBuilder.new(output_dir, source_module).build!
+      docset_builder.build!(source_module.all_declarations)
 
       generate_badge(source_module.doc_coverage, options)
 
@@ -137,14 +151,12 @@ module Jazzy
     end
 
     # Build docs given sourcekitten output
-    # @param [String] sourcekitten_output Output of sourcekitten command
+    # @param [Array<String>] sourcekitten_output Output of sourcekitten command for each module
     # @param [Config] options Build options
-    # @return [SourceModule] the documented source module
     def self.build_docs_for_sourcekitten_output(sourcekitten_output, options)
       (docs, stats) = SourceKitten.parse(
         sourcekitten_output,
-        options.min_acl,
-        options.skip_undocumented,
+        options,
         DocumentationGenerator.source_docs,
       )
 
@@ -161,7 +173,7 @@ module Jazzy
 
     def self.relative_path_if_inside(path, base_path)
       relative = path.relative_path_from(base_path)
-      if relative.to_path =~ %r{/^..(\/|$)/}
+      if relative.to_path =~ %r{/^..(/|$)/}
         path
       else
         relative
@@ -172,7 +184,7 @@ module Jazzy
       decls.map do |decl|
         {
           file: decl.file,
-          line: decl.line || decl.start_line,
+          line: decl.start_line || decl.line,
           symbol: decl.fully_qualified_name,
           symbol_kind: decl.type.kind,
           warning: 'undocumented',
@@ -186,7 +198,10 @@ module Jazzy
 
         lint_report = {
           warnings: warnings.sort_by do |w|
-            [w[:file], w[:line] || 0, w[:symbol], w[:symbol_kind]]
+            [w[:file] || Pathname(''),
+             w[:line] || 0,
+             w[:symbol],
+             w[:symbol_kind]]
           end,
           source_directory: options.source_directory,
         }
@@ -194,7 +209,7 @@ module Jazzy
       end
     end
 
-    def self.copy_assets(destination)
+    def self.copy_theme_assets(destination)
       assets_directory = Config.instance.theme_directory + 'assets'
       FileUtils.cp_r(assets_directory.children, destination)
       Pathname.glob(destination + 'css/**/*.scss').each do |scss|
@@ -205,31 +220,61 @@ module Jazzy
       end
     end
 
+    def self.copy_extensions(source_module, destination)
+      if source_host = source_module.host&.extension
+        copy_extension(source_host, destination)
+      end
+      copy_extension('katex', destination) if Markdown.has_math
+    end
+
+    def self.copy_extension(name, destination)
+      ext_directory = Pathname(__dir__) / 'extensions' / name
+      FileUtils.cp_r(ext_directory.children, destination)
+    end
+
     def self.render(doc_model, markdown)
       html = Markdown.render(markdown)
       SourceKitten.autolink_document(html, doc_model)
     end
 
+    def self.render_inline(doc_model, markdown)
+      html = Markdown.render_inline(markdown)
+      SourceKitten.autolink_document(html, doc_model)
+    end
+
+    # Build Mustache document - common fields between page types
+    def self.new_document(source_module, doc_model)
+      Doc.new.tap do |doc|
+        doc[:custom_head] = Config.instance.custom_head
+        doc[:disable_search] = Config.instance.disable_search
+        doc[:doc_coverage] = source_module.doc_coverage unless
+          Config.instance.hide_documentation_coverage
+        doc[:structure] = source_module.doc_structure
+        doc[:readme_title] = source_module.readme_title
+        doc[:module_name] = doc[:readme_title]
+        doc[:author_name] = source_module.author_name
+        if source_host = source_module.host
+          doc[:source_host_name] = source_host.name
+          doc[:source_host_url] = source_host.url
+          doc[:source_host_image] = source_host.image
+          doc[:source_host_item_url] = source_host.item_url(doc_model)
+          doc[:github_url] = doc[:source_host_url]
+          doc[:github_token_url] = doc[:source_host_item_url]
+        end
+        doc[:dash_url] = source_module.dash_feed_url
+        doc[:breadcrumbs] = make_breadcrumbs(doc_model)
+      end
+    end
+
     # Build Mustache document from a markdown source file
-    # @param [Config] options Build options
+    # @param [SourceModule] module-wide settings
     # @param [Hash] doc_model Parsed doc. @see SourceKitten.parse
     # @param [String] path_to_root
-    # @param [Array] doc_structure doc structure comprised of section names and
-    #        child names and URLs. @see doc_structure_for_docs
     def self.document_markdown(source_module, doc_model, path_to_root)
-      doc = Doc.new # Mustache model instance
-      name = doc_model.name == 'index' ? source_module.name : doc_model.name
+      doc = new_document(source_module, doc_model)
+      name = doc_model.readme? ? source_module.readme_title : doc_model.name
       doc[:name] = name
       doc[:overview] = render(doc_model, doc_model.content(source_module))
-      doc[:custom_head] = Config.instance.custom_head
-      doc[:disable_search] = Config.instance.disable_search
-      doc[:doc_coverage] = source_module.doc_coverage unless
-        Config.instance.hide_documentation_coverage
-      doc[:structure] = source_module.doc_structure
-      doc[:module_name] = source_module.name
-      doc[:author_name] = source_module.author_name
-      doc[:github_url] = source_module.github_url
-      doc[:dash_url] = source_module.dash_url
       doc[:path_to_root] = path_to_root
       doc[:hide_name] = true
       doc.render.gsub(ELIDED_AUTOLINK_TOKEN, path_to_root)
@@ -303,30 +348,6 @@ module Jazzy
     end
     # rubocop:enable Metrics/MethodLength
 
-    def self.should_link_to_github(file)
-      return unless file
-      file = file.realpath.to_path
-      source_directory = Config.instance.source_directory.to_path
-      file.start_with?(source_directory)
-    end
-
-    # Construct Github token URL
-    # @param [Hash] item Parsed doc child item
-    # @param [Config] options Build options
-    def self.gh_token_url(item, source_module)
-      return unless github_prefix = source_module.github_file_prefix
-      return unless should_link_to_github(item.file)
-      gh_line = if item.start_line && (item.start_line != item.end_line)
-                  "#L#{item.start_line}-L#{item.end_line}"
-                else
-                  "#L#{item.line}"
-                end
-      relative_file_path = item.file.realpath.relative_path_from(
-        source_module.root_path,
-      )
-      "#{github_prefix}/#{relative_file_path}#{gh_line}"
-    end
-
     # Build mustache item for a top-level doc
     # @param [Hash] item Parsed doc child item
     # @param [Config] options Build options
@@ -334,33 +355,40 @@ module Jazzy
     def self.render_item(item, source_module)
       # Combine abstract and discussion into abstract
       abstract = (item.abstract || '') + (item.discussion || '')
+      source_host_item_url = source_module.host&.item_url(item)
       {
-        name:                       item.name,
-        abstract:                   abstract,
-        declaration:                item.display_declaration,
+        name: item.name,
+        name_html: item.name.gsub(':', ':<wbr>'),
+        abstract: abstract,
+        declaration: item.display_declaration,
+        language: item.display_language,
         other_language_declaration: item.display_other_language_declaration,
-        usr:                        item.usr,
-        dash_type:                  item.type.dash_type,
-        github_token_url:           gh_token_url(item, source_module),
-        default_impl_abstract:      item.default_impl_abstract,
-        from_protocol_extension:    item.from_protocol_extension,
-        return:                     item.return,
-        parameters:                 (item.parameters if item.parameters.any?),
-        url:                        (item.url if item.render_as_page?),
-        start_line:                 item.start_line,
-        end_line:                   item.end_line,
-        direct_link:                item.omit_content_from_parent?,
-        deprecation_message:        item.deprecation_message,
-        unavailable_message:        item.unavailable_message,
-        usage_discouraged:          item.usage_discouraged?,
+        usr: item.usr,
+        dash_type: item.type.dash_type,
+        source_host_item_url: source_host_item_url,
+        github_token_url: source_host_item_url,
+        default_impl_abstract: item.default_impl_abstract,
+        from_protocol_extension: item.from_protocol_extension,
+        return: item.return,
+        parameters: (item.parameters if item.parameters.any?),
+        url: (item.url if item.render_as_page?),
+        start_line: item.start_line,
+        end_line: item.end_line,
+        direct_link: item.omit_content_from_parent?,
+        deprecation_message: item.deprecation_message,
+        unavailable_message: item.unavailable_message,
+        usage_discouraged: item.usage_discouraged?,
+        async: item.async,
+        declaration_note: item.declaration_note,
       }
     end
     # rubocop:enable Metrics/MethodLength
 
-    def self.make_task(mark, uid, items)
+    def self.make_task(mark, uid, items, doc_model)
       {
         name: mark.name,
-        uid: URI.encode(uid),
+        name_html: (render_inline(doc_model, mark.name) if mark.name),
+        uid: ERB::Util.url_encode(uid),
         items: items,
         pre_separator: mark.has_start_dash,
         post_separator: mark.has_end_dash,
@@ -379,21 +407,19 @@ module Jazzy
         uid = (mark.name || 'Unnamed').to_s
         if mark_names_counts.key?(uid)
           mark_names_counts[uid] += 1
-          uid += (mark_names_counts[uid]).to_s
+          uid += mark_names_counts[uid].to_s
         else
           mark_names_counts[uid] = 1
         end
-        make_task(mark, uid, items)
+        make_task(mark, uid, items, mark_children.first)
       end
     end
 
     # rubocop:disable Metrics/MethodLength
-    # Build Mustache document from single parsed doc
-    # @param [Config] options Build options
+    # Build Mustache document from single parsed decl
+    # @param [SourceModule] module-wide settings
     # @param [Hash] doc_model Parsed doc. @see SourceKitten.parse
     # @param [String] path_to_root
-    # @param [Array] doc_structure doc structure comprised of section names and
-    #        child names and URLs. @see doc_structure_for_docs
     def self.document(source_module, doc_model, path_to_root)
       if doc_model.type.markdown?
         return document_markdown(source_module, doc_model, path_to_root)
@@ -405,22 +431,18 @@ module Jazzy
         overview = render(doc_model, alternative_abstract) + overview
       end
 
-      doc = Doc.new # Mustache model instance
-      doc[:custom_head] = Config.instance.custom_head
-      doc[:disable_search] = Config.instance.disable_search
-      doc[:doc_coverage] = source_module.doc_coverage unless
-        Config.instance.hide_documentation_coverage
+      doc = new_document(source_module, doc_model)
       doc[:name] = doc_model.name
       doc[:kind] = doc_model.type.name
       doc[:dash_type] = doc_model.type.dash_type
       doc[:declaration] = doc_model.display_declaration
+      doc[:language] = doc_model.display_language
+      doc[:other_language_declaration] =
+        doc_model.display_other_language_declaration
       doc[:overview] = overview
-      doc[:structure] = source_module.doc_structure
+      doc[:parameters] = doc_model.parameters
+      doc[:return] = doc_model.return
       doc[:tasks] = render_tasks(source_module, doc_model.children)
-      doc[:module_name] = source_module.name
-      doc[:author_name] = source_module.author_name
-      doc[:github_url] = source_module.github_url
-      doc[:dash_url] = source_module.dash_url
       doc[:path_to_root] = path_to_root
       doc[:deprecation_message] = doc_model.deprecation_message
       doc[:unavailable_message] = doc_model.unavailable_message
@@ -428,5 +450,28 @@ module Jazzy
       doc.render.gsub(ELIDED_AUTOLINK_TOKEN, path_to_root)
     end
     # rubocop:enable Metrics/MethodLength
+
+    # Breadcrumbs for a page - doesn't include the top 'readme' crumb
+    def self.make_breadcrumbs(doc_model)
+      return [] if doc_model.readme?
+
+      docs_path = doc_model.docs_path
+      breadcrumbs = docs_path.map do |doc|
+        {
+          name: doc.name,
+          url: doc.url,
+          last: doc == doc_model,
+        }
+      end
+
+      return breadcrumbs if breadcrumbs.one?
+
+      # Add the module name to the outer type if not clear from context
+      if docs_path[1].ambiguous_module_name?(docs_path[0].name)
+        breadcrumbs[1][:name] = docs_path[1].fully_qualified_module_name
+      end
+
+      breadcrumbs
+    end
   end
 end

@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'date'
 require 'pathname'
 require 'mustache'
@@ -18,7 +20,7 @@ module Jazzy
         date = ENV['JAZZY_FAKE_DATE'] || DateTime.now.strftime('%Y-%m-%d')
         year = date[0..3]
         "&copy; #{year} [#{config.author_name}](#{config.author_url}). " \
-        "All rights reserved. (Last updated: #{date})"
+          "All rights reserved. (Last updated: #{date})"
       )
       Markdown.render_copyright(copyright).chomp
     end
@@ -30,10 +32,6 @@ module Jazzy
 
     def objc_first?
       config.objc_mode && config.hide_declarations != 'objc'
-    end
-
-    def language
-      objc_first? ? 'Objective-C' : 'Swift'
     end
 
     def language_stub
@@ -50,10 +48,14 @@ module Jazzy
       elsif config.version_configured
         # Fake version for integration tests
         version = ENV['JAZZY_FAKE_MODULE_VERSION'] || config.version
-        "#{config.module_name} #{version} Docs"
+        "#{config.module_configs.first.module_name} #{version} Docs"
       else
-        "#{config.module_name} Docs"
+        "#{config.module_configs.first.module_name} Docs"
       end
+    end
+
+    def enable_katex
+      Markdown.has_math
     end
   end
 end

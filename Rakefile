@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 #-- Bootstrap --------------------------------------------------------------#
 
 desc 'Initializes your working copy to run the specs'
@@ -9,7 +11,7 @@ task :bootstrap do
     title 'Updating submodules'
     sh 'git submodule update --init --recursive'
   else
-    $stderr.puts "\033[0;31m" \
+    warn "\033[0;31m" \
       "[!] Please install the bundler gem manually:\n" \
       '    $ [sudo] gem install bundler' \
       "\e[0m"
@@ -69,7 +71,7 @@ begin
       destination = "spec/integration_specs/#{source.gsub('tmp/', '')}/after"
       if File.exist?(destination)
         sh "rm -rf #{destination}"
-        sh "mv #{source} #{destination}"
+        sh "mv #{source}/transformed #{destination}"
       end
     end
 
@@ -95,7 +97,7 @@ begin
 
   desc 'Runs RuboCop linter on Ruby files'
   task :rubocop do
-    sh 'bundle exec rubocop lib spec'
+    sh 'bundle exec rubocop'
   end
 
   #-- SourceKitten -----------------------------------------------------------#
@@ -103,20 +105,51 @@ begin
   desc 'Vendors SourceKitten'
   task :sourcekitten do
     sk_dir = 'SourceKitten'
-    Dir.chdir(sk_dir) do
-      `swift build -c release`
+    bin_path = Dir.chdir(sk_dir) do
+      build_cmd = 'swift build -c release --arch arm64 --arch x86_64'
+      `#{build_cmd}`
+      `#{build_cmd} --show-bin-path`.chomp
     end
-    FileUtils.cp_r "#{sk_dir}/.build/release/sourcekitten", 'bin'
+    FileUtils.cp_r "#{bin_path}/sourcekitten", 'bin'
   end
 
+  #-- Theme Dependencies -----------------------------------------------------#
+
+  THEME_FILES = {
+    'jquery/dist/jquery.min.js' => [
+      'themes/apple/assets/js',
+      'themes/fullwidth/assets/js',
+      'themes/jony/assets/js',
+    ],
+    'lunr/lunr.min.js' => [
+      'themes/apple/assets/js',
+      'themes/fullwidth/assets/js',
+    ],
+    'corejs-typeahead/dist/typeahead.jquery.js' => [
+      'themes/apple/assets/js',
+      'themes/fullwidth/assets/js',
+    ],
+    'katex/dist/katex.min.css' => ['extensions/katex/css'],
+    'katex/dist/fonts' => ['extensions/katex/css'],
+    'katex/dist/katex.min.js' => ['extensions/katex/js'],
+  }.freeze
+
+  desc 'Copies theme dependencies (`npm update/install` by hand first)'
+  task :theme_deps do
+    THEME_FILES.each_pair do |src, dsts|
+      dsts.each do |dst|
+        FileUtils.cp_r "js/node_modules/#{src}", "lib/jazzy/#{dst}"
+      end
+    end
+  end
 rescue LoadError, NameError => e
-  $stderr.puts "\033[0;31m" \
+  warn "\033[0;31m" \
     '[!] Some Rake tasks haven been disabled because the environment' \
     ' couldn’t be loaded. Be sure to run `rake bootstrap` first.' \
     "\e[0m"
-  $stderr.puts e.message
-  $stderr.puts e.backtrace
-  $stderr.puts
+  warn e.message
+  warn e.backtrace
+  warn ''
 end
 
 #-- Helpers ------------------------------------------------------------------#

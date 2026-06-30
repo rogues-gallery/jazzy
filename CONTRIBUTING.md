@@ -13,12 +13,12 @@ the `CHANGELOG.md` file.
 
 We follow the same syntax as CocoaPods' CHANGELOG.md:
 
-1. One Markdown unnumbered list item desribing the change.
-2. 2 trailing spaces on the last line describing the change.
+1. One Markdown unnumbered list item describing the change.
+2. Two trailing spaces on the last line describing the change.
 3. A list of Markdown hyperlinks to the contributors to the change. One entry
-   per line. Usually just one.
+   per line (and there's usually just one contributor).
 4. A list of Markdown hyperlinks to the issues the change addresses. One entry
-   per line. Usually just one. Don't link to PRs here.
+   per line (and there's usually just one hyperlink). Don't link to PRs here.
 5. All CHANGELOG.md content is hard-wrapped at 80 characters.
 
 ## Updating the integration specs
@@ -49,7 +49,7 @@ git push
 You'll need push access to the integration specs repo to do this. You can
 request access from one of the maintainers when filing your PR.
 
-You must have Xcode 10.2 installed to build the integration specs.
+You must have Xcode 26.1 beta 1 installed to build the integration specs.
 
 ## Making changes to SourceKitten
 

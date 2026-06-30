@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 require 'pathname'
 
 require 'jazzy/jazzy_markdown'
@@ -20,8 +22,13 @@ module Jazzy
     def self.make_index(readme_path)
       SourceDocument.new.tap do |sd|
         sd.name = 'index'
+        sd.url = sd.name + '.html'
         sd.readme_path = readme_path
       end
+    end
+
+    def readme?
+      url == 'index.html'
     end
 
     def render_as_page?
@@ -36,12 +43,13 @@ module Jazzy
       Config.instance
     end
 
-    def url
-      name.downcase.strip.tr(' ', '-').gsub(/[^\w-]/, '') + '.html'
+    def url_name
+      name.downcase.strip.tr(' ', '-').gsub(/[^[[:word:]]-]/, '')
     end
 
     def content(source_module)
       return readme_content(source_module) if name == 'index'
+
       overview
     end
 
@@ -50,7 +58,7 @@ module Jazzy
     end
 
     def config_readme
-      readme_path.read if readme_path && readme_path.exist?
+      readme_path.read if readme_path&.exist?
     end
 
     def fallback_readme
@@ -66,7 +74,7 @@ module Jazzy
         ### License
 
         # <a href="#{license[:url]}">#{license[:license]}</a>
-        <<-EOS
+        <<-README
 # #{podspec.name}
 
 ### #{podspec.summary}
@@ -82,15 +90,15 @@ pod '#{podspec.name}'
 ### Authors
 
 #{source_module.author_name}
-EOS
+        README
       else
-        <<-EOS
-# #{source_module.name}
+        <<-README
+# #{source_module.readme_title}
 
 ### Authors
 
 #{source_module.author_name}
-EOS
+        README
       end
     end
   end
